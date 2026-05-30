@@ -1,0 +1,25 @@
+version: '3.8'
+
+# Definición de los servicios que componen nuestra infraestructura
+services:
+  postgres: # Nombre del servicio (el identificador que usaremos en la red de Docker)
+    build: './dockerfiles/postgresql' # Indica a Docker dónde buscar el Dockerfile para construir la imagen personalizada
+    image: postgres_operaciones_maquina # Nombre con el que se guardará la imagen una vez construida
+    container_name: postgres # Nombre fijo que tendrá el contenedor al ejecutarse (facilita el docker exec)
+    environment: # Configuración de variables de entorno para el motor de Postgres
+      - POSTGRES_USER=airflow # Define el nombre de usuario administrador de la base
+      - POSTGRES_PASSWORD=airflow # Define la contraseña para dicho usuario
+      - POSTGRES_DB=airflow # Define el nombre de la base de datos que se creará automáticamente
+    ports: # Mapeo de puertos entre la PC y el contenedor
+      - "5432:5432" # El puerto 5432 de la PC se redirige al 5432 del contenedor (puerto estándar de Postgres)
+    volumes: # Gestión de persistencia de datos
+      - db_data:/var/lib/postgresql/data # Mapea el volumen nombrado 'db_data' a la ruta interna donde Postgres guarda los archivos
+    healthcheck: # Sistema de verificación de salud para saber si la BD ya terminó de arrancar
+      test: ["CMD", "pg_isready", "-p", "5432", "-U", "${PG_USER:-airflow}"] # Comando para chequear si el puerto responde (usa PG_USER o 'airflow' por defecto)
+      interval: 60s # Cada cuánto tiempo debe chequear el estado (60 segundos)
+      timeout: 20s # Tiempo máximo de espera para recibir respuesta del chequeo
+      retries: 3 # Cuántos intentos fallidos seguidos marcarán al contenedor como 'unhealthy'
+
+# Definición de los volúmenes para persistencia de datos
+volumes:
+  db_data: # Declaración del volumen nombrado que usamos arriba, esto permite que los datos sobrevivan al borrado del contenedor

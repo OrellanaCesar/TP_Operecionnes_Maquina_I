@@ -63,6 +63,11 @@ services:
       - backend
     ports:
       - "5000:5000"
+    command: >
+      --host 0.0.0.0 
+      --port 5000 
+      --backend-store-uri postgresql://airflow:airflow@postgres:5432/airflow 
+      --default-artifact-root s3://mlflow/
     depends_on:
       postgres:
         condition: service_healthy # MLflow arranca solo cuando Postgres está listo

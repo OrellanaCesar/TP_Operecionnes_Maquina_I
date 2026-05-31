@@ -1,0 +1,6 @@
+# Instala MLflow con sus dependencias adicionales (extras incluye soporte para S3, Postgres, etc.)
+mlflow[extras]~=2.10
+# Instala la librería 'boto3', necesaria para que MLflow pueda "hablar" con MinIO (que es compatible con S3)
+boto3~=1.34
+# Driver necesario para que Python pueda conectarse a PostgreSQL
+psycopg2-binary

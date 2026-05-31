@@ -1,0 +1,8 @@
+# Proveedor para que Airflow pueda comunicarse con bases de datos PostgreSQL
+apache-airflow-providers-postgres
+# Proveedor para que Airflow pueda usar servicios de almacenamiento S3/MinIO
+apache-airflow-providers-amazon
+# Librería estándar para análisis de datos
+pandas
+# Librería estándar para algoritmos de Machine Learning
+scikit-learn

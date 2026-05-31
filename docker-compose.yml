@@ -1,25 +1,86 @@
-version: '3.8'
+version: '3.8' # Especifica la versión del formato del archivo Docker Compose
 
-# Definición de los servicios que componen nuestra infraestructura
+# Definición de los servicios (contenedores) que componen la infraestructura
 services:
-  postgres: # Nombre del servicio (el identificador que usaremos en la red de Docker)
-    build: './dockerfiles/postgresql' # Indica a Docker dónde buscar el Dockerfile para construir la imagen personalizada
-    image: postgres_operaciones_maquina # Nombre con el que se guardará la imagen una vez construida
-    container_name: postgres # Nombre fijo que tendrá el contenedor al ejecutarse (facilita el docker exec)
-    environment: # Configuración de variables de entorno para el motor de Postgres
-      - POSTGRES_USER=airflow # Define el nombre de usuario administrador de la base
-      - POSTGRES_PASSWORD=airflow # Define la contraseña para dicho usuario
-      - POSTGRES_DB=airflow # Define el nombre de la base de datos que se creará automáticamente
-    ports: # Mapeo de puertos entre la PC y el contenedor
-      - "5432:5432" # El puerto 5432 de la PC se redirige al 5432 del contenedor (puerto estándar de Postgres)
-    volumes: # Gestión de persistencia de datos
-      - db_data:/var/lib/postgresql/data # Mapea el volumen nombrado 'db_data' a la ruta interna donde Postgres guarda los archivos
-    healthcheck: # Sistema de verificación de salud para saber si la BD ya terminó de arrancar
-      test: ["CMD", "pg_isready", "-p", "5432", "-U", "${PG_USER:-airflow}"] # Comando para chequear si el puerto responde (usa PG_USER o 'airflow' por defecto)
-      interval: 60s # Cada cuánto tiempo debe chequear el estado (60 segundos)
-      timeout: 20s # Tiempo máximo de espera para recibir respuesta del chequeo
-      retries: 3 # Cuántos intentos fallidos seguidos marcarán al contenedor como 'unhealthy'
 
-# Definición de los volúmenes para persistencia de datos
+  # 1. Base de Datos Postgres: Almacena los metadatos de MLflow (experimentos, parámetros, etc.)
+  postgres:
+    build: './dockerfiles/postgresql' 
+    image: postgres_operaciones_maquina
+    container_name: postgres
+    networks:
+      - backend # Conexión a la red privada para comunicarse con mlflow
+    environment:
+      - POSTGRES_USER=airflow
+      - POSTGRES_PASSWORD=airflow
+      - POSTGRES_DB=airflow
+    ports:
+      - "5432:5432" # Expone el puerto para acceso externo si fuera necesario
+    volumes:
+      - db_data:/var/lib/postgresql/data # Persistencia: los datos no se borran al reiniciar el contenedor
+    healthcheck:
+      test: ["CMD", "pg_isready", "-p", "5432", "-U", "airflow"]
+      interval: 60s
+      timeout: 20s
+      retries: 3
+
+  # 2. Almacenamiento S3 (MinIO): Donde se guardan los modelos y artefactos pesados
+  s3:
+    image: minio/minio:latest
+    container_name: minio
+    networks:
+      - backend
+    ports:
+      - "9000:9000" # API para subir/bajar modelos
+      - "9001:9001" # Consola web de gestión de MinIO
+    environment:
+      - MINIO_ROOT_USER=minio
+      - MINIO_ROOT_PASSWORD=minio123
+    volumes:
+      - minio_data:/data # Persistencia: donde se guardan los archivos físicamente
+    command: server /data --console-address :9001
+
+  # 3. Inicializador de S3: Automatiza la creación del bucket para MLflow
+  create_s3_buckets:
+    image: minio/mc:latest
+    networks:
+      - backend
+    depends_on:
+      - s3 # Asegura que S3 arranque antes de intentar crear el bucket
+    entrypoint: >
+      /bin/sh -c '
+      sleep 5; # Pausa breve para asegurar que MinIO está listo
+      /usr/bin/mc alias set s3 http://s3:9000 minio minio123;
+      /usr/bin/mc mb s3/mlflow; # Crea el bucket llamado "mlflow"
+      exit 0;
+      '
+
+  # 4. Servidor de MLflow: Interfaz para gestionar experimentos de ML
+  mlflow:
+    build: "./dockerfiles/mlflow"
+    container_name: mlflow
+    networks:
+      - backend
+    ports:
+      - "5000:5000"
+    depends_on:
+      postgres:
+        condition: service_healthy # MLflow arranca solo cuando Postgres está listo
+    environment:
+      - AWS_ACCESS_KEY_ID=minio
+      - AWS_SECRET_ACCESS_KEY=minio123
+      # URL donde MLflow guarda la información estructurada
+      - MLFLOW_BACKEND_STORE_URI=postgresql://airflow:airflow@postgres:5432/airflow
+      # URL donde MLflow guarda los archivos físicos
+      - MLFLOW_ARTIFACT_ROOT=s3://mlflow/ 
+      - MLFLOW_S3_ENDPOINT_URL=http://s3:9000
+
+# Definición de la red (puente) que permite la comunicación entre contenedores
+networks:
+  backend:
+    driver: bridge
+
+# Definición de volúmenes persistentes (almacenamiento en disco local)
 volumes:
-  db_data: # Declaración del volumen nombrado que usamos arriba, esto permite que los datos sobrevivan al borrado del contenedor
+  db_data: # Espacio de Postgres
+  minio_data: # Espacio de MinIO

@@ -1,5 +1,3 @@
-version: '3.8' # Especifica la versión del formato del archivo Docker Compose
-
 # Definición de los servicios (contenedores) que componen la infraestructura
 services:
 
@@ -40,18 +38,19 @@ services:
       - minio_data:/data # Persistencia: donde se guardan los archivos físicamente
     command: server /data --console-address :9001
 
-  # 3. Inicializador de S3: Automatiza la creación del bucket para MLflow
+  # 3. Inicializador de S3: Automatiza la creación de buckets para MLflow y datos
   create_s3_buckets:
     image: minio/mc:latest
     networks:
       - backend
     depends_on:
-      - s3 # Asegura que S3 arranque antes de intentar crear el bucket
+      - s3
     entrypoint: >
       /bin/sh -c '
-      sleep 5; # Pausa breve para asegurar que MinIO está listo
+      sleep 5;
       /usr/bin/mc alias set s3 http://s3:9000 minio minio123;
-      /usr/bin/mc mb s3/mlflow; # Crea el bucket llamado "mlflow"
+      /usr/bin/mc mb --ignore-existing s3/mlflow;
+      /usr/bin/mc mb --ignore-existing s3/data;
       exit 0;
       '
 
@@ -66,20 +65,80 @@ services:
     command: >
       --host 0.0.0.0 
       --port 5000 
-      --backend-store-uri postgresql://airflow:airflow@postgres:5432/airflow 
+      --backend-store-uri postgresql://airflow:airflow@postgres:5432/mlflow_db
       --default-artifact-root s3://mlflow/
     depends_on:
       postgres:
         condition: service_healthy # MLflow arranca solo cuando Postgres está listo
+      create_s3_buckets:
+        condition: service_completed_successfully
     environment:
       - AWS_ACCESS_KEY_ID=minio
       - AWS_SECRET_ACCESS_KEY=minio123
       # URL donde MLflow guarda la información estructurada
-      - MLFLOW_BACKEND_STORE_URI=postgresql://airflow:airflow@postgres:5432/airflow
+      - MLFLOW_BACKEND_STORE_URI=postgresql://airflow:airflow@postgres:5432/mlflow_db
       # URL donde MLflow guarda los archivos físicos
       - MLFLOW_ARTIFACT_ROOT=s3://mlflow/ 
       - MLFLOW_S3_ENDPOINT_URL=http://s3:9000
 
+  # 5. Inicializador de Airflow: Automatiza la configuración inicial de Airflow
+  airflow-init:
+    build: ./dockerfiles/airflow
+    container_name: airflow-init
+    networks:
+      - backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: airflow db migrate
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
+      AIRFLOW_HOME: /opt/airflow
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./logs:/opt/airflow/logs
+      - ./plugins:/opt/airflow/plugins
+
+  # 6. Webserver de Airflow: Interfaz de usuario para gestionar flujos de trabajo
+  airflow-apiserver:
+    build: ./dockerfiles/airflow
+    container_name: airflow-apiserver
+    restart: always
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    ports:
+      - "8080:8080"
+    networks:
+      - backend
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
+    command: airflow api-server
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./logs:/opt/airflow/logs
+      - ./plugins:/opt/airflow/plugins
+
+  # 7. Scheduler de Airflow: Orquesta la ejecución de los flujos de trabajo
+  airflow-scheduler:
+    build: ./dockerfiles/airflow
+    container_name: airflow-scheduler
+    restart: always
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    networks:
+      - backend
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
+    command: airflow scheduler
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./logs:/opt/airflow/logs
+      - ./plugins:/opt/airflow/plugins
 # Definición de la red (puente) que permite la comunicación entre contenedores
 networks:
   backend:

@@ -10,11 +10,10 @@ USER root
 # Actualiza los repositorios de paquetes e instala 'git' (útil para bajar código de repositorios)
 # Luego limpia los archivos temporales para reducir el tamaño de la imagen
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-    git \
-    && apt-get autoremove -yqq --purge \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+ && apt-get install -y --no-install-recommends git \
+ && apt-get autoremove -yqq --purge \
+ && apt-get clean \
+ && rm -rf /var/lib/apt/lists/*
 
 # Vuelve al usuario 'airflow' por seguridad (nunca debemos ejecutar procesos como root si no es necesario)
 USER airflow

@@ -6,3 +6,10 @@ apache-airflow-providers-amazon
 pandas
 # Librería estándar para algoritmos de Machine Learning
 scikit-learn
+
+numpy
+
+mlflow
+boto3
+catboost
+psycopg2-binary

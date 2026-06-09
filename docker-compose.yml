@@ -3,7 +3,7 @@ services:
 
   # 1. Base de Datos Postgres: Almacena los metadatos de MLflow (experimentos, parámetros, etc.)
   postgres:
-    build: './dockerfiles/postgresql' 
+    build: './dockerfiles/postgresql'
     image: postgres_operaciones_maquina
     container_name: postgres
     networks:
@@ -17,7 +17,7 @@ services:
     volumes:
       - db_data:/var/lib/postgresql/data # Persistencia: los datos no se borran al reiniciar el contenedor
     healthcheck:
-      test: ["CMD", "pg_isready", "-p", "5432", "-U", "airflow"]
+      test: [ "CMD", "pg_isready", "-p", "5432", "-U", "airflow" ]
       interval: 60s
       timeout: 20s
       retries: 3
@@ -46,13 +46,7 @@ services:
     depends_on:
       - s3
     entrypoint: >
-      /bin/sh -c '
-      sleep 5;
-      /usr/bin/mc alias set s3 http://s3:9000 minio minio123;
-      /usr/bin/mc mb --ignore-existing s3/mlflow;
-      /usr/bin/mc mb --ignore-existing s3/data;
-      exit 0;
-      '
+      /bin/sh -c ' sleep 5; /usr/bin/mc alias set s3 http://s3:9000 minio minio123; /usr/bin/mc mb --ignore-existing s3/mlflow; /usr/bin/mc mb --ignore-existing s3/data; exit 0; '
 
   # 4. Servidor de MLflow: Interfaz para gestionar experimentos de ML
   mlflow:
@@ -63,10 +57,7 @@ services:
     ports:
       - "5000:5000"
     command: >
-      --host 0.0.0.0 
-      --port 5000 
-      --backend-store-uri postgresql://airflow:airflow@postgres:5432/mlflow_db
-      --default-artifact-root s3://mlflow/
+      --host 0.0.0.0  --port 5000  --backend-store-uri postgresql://airflow:airflow@postgres:5432/mlflow_db --default-artifact-root s3://mlflow/
     depends_on:
       postgres:
         condition: service_healthy # MLflow arranca solo cuando Postgres está listo
@@ -78,7 +69,7 @@ services:
       # URL donde MLflow guarda la información estructurada
       - MLFLOW_BACKEND_STORE_URI=postgresql://airflow:airflow@postgres:5432/mlflow_db
       # URL donde MLflow guarda los archivos físicos
-      - MLFLOW_ARTIFACT_ROOT=s3://mlflow/ 
+      - MLFLOW_ARTIFACT_ROOT=s3://mlflow/
       - MLFLOW_S3_ENDPOINT_URL=http://s3:9000
 
   # 5. Inicializador de Airflow: Automatiza la configuración inicial de Airflow
@@ -139,6 +130,23 @@ services:
       - ./dags:/opt/airflow/dags
       - ./logs:/opt/airflow/logs
       - ./plugins:/opt/airflow/plugins
+
+  # 8. Servicio de Predicción (FastAPI): API para servir modelos entrenados
+  fastapi:
+    build: ./dockerfiles/fastapi
+    container_name: fastapi
+    restart: always
+    ports:
+      - "8800:8800"
+    networks:
+      - backend
+    depends_on:
+      - mlflow # La API consultará a MLflow para obtener modelos
+    environment:
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+      - MLFLOW_S3_ENDPOINT_URL=http://s3:9000
+      - AWS_ACCESS_KEY_ID=minio
+      - AWS_SECRET_ACCESS_KEY=minio123
 # Definición de la red (puente) que permite la comunicación entre contenedores
 networks:
   backend:

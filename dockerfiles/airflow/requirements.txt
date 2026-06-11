@@ -13,3 +13,5 @@ mlflow
 boto3
 catboost
 psycopg2-binary
+matplotlib
+seaborn

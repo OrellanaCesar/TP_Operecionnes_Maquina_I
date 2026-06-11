@@ -1,5 +1,9 @@
+# Librerías para el desarrollo de la API
 fastapi
 uvicorn
 mlflow~=2.10
 boto3
 psycopg2-binary
+scikit-learn==1.6.1
+matplotlib
+seaborn

@@ -1,3 +1,22 @@
+x-airflow-env: &airflow-env
+  AIRFLOW__CORE__EXECUTOR: CeleryExecutor
+  AIRFLOW__CELERY__BROKER_URL: redis://redis:6379/0
+  AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://airflow:airflow@postgres:5432/airflow
+  AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
+  AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
+  AIRFLOW__CORE__STORE_SERIALIZED_DAGS: "True"
+  AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+  AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS: "True"
+  # IMPORTANTE AIRFLOW 3
+  AIRFLOW__CORE__INTERNAL_API_SECRET_KEY: "mi_clave_super_secreta_123"
+  AIRFLOW__CORE__EXECUTION_API_SERVER_URL: "http://airflow-apiserver:8080/execution"
+  AIRFLOW__WEBSERVER__SECRET_KEY: "una_clave_secreta_muy_larga_y_segura"
+  AIRFLOW__CORE__FERNET_KEY: "46BKJoQYlPPOexq0OhDZnIlUkKD3NvZIvIItJ1g34Ew="
+  # NUEVA VARIABLE OBLIGATORIA PARA EL TASK SDK DE AIRFLOW 3
+  AIRFLOW__API_AUTH__JWT_SECRET: "una_clave_jwt_super_secreta_y_larga_para_airflow_3"
+  AWS_ACCESS_KEY_ID: "minio"
+  AWS_SECRET_ACCESS_KEY: "minio123"
+  MLFLOW_S3_ENDPOINT_URL: "http://s3:9000"
 # Definición de los servicios (contenedores) que componen la infraestructura
 services:
 
@@ -45,10 +64,41 @@ services:
       - backend
     depends_on:
       - s3
+    volumes:
+    # Conectamos la carpeta local 'data' con la carpeta '/local_data' del contenedor
+      - ./data:/local_data
     entrypoint: >
-      /bin/sh -c ' sleep 5; /usr/bin/mc alias set s3 http://s3:9000 minio minio123; /usr/bin/mc mb --ignore-existing s3/mlflow; /usr/bin/mc mb --ignore-existing s3/data; exit 0; '
+      /bin/sh -c ' 
+      echo "Esperando a que MinIO esté listo...";
+      until (/usr/bin/mc alias set s3 http://s3:9000 minio minio123); do sleep 2; done;
+      /usr/bin/mc alias set s3 http://s3:9000 minio minio123; 
+      /usr/bin/mc mb --ignore-existing s3/mlflow; 
+      /usr/bin/mc mb --ignore-existing s3/data; 
+      /usr/bin/mc mb --ignore-existing s3/data/raw;
+      /usr/bin/mc mb --ignore-existing s3/data/processed;
+      echo "Subiendo dataset crudo a MinIO...";
+      /usr/bin/mc cp /local_data/healthcare-dataset-stroke-data.csv s3/data/raw/healthcare-dataset-stroke-data.csv;
+      echo "Aprovisionamiento completado.";
+      exit 0; 
+      '
 
-  # 4. Servidor de MLflow: Interfaz para gestionar experimentos de ML
+  # 4. Cola de Mensajes Redis: Coordinación entre servicios
+  redis:
+    image: valkey/valkey:8.1-bookworm
+    container_name: redis
+    expose:
+      - "6379"
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 10s
+      timeout: 30s
+      retries: 50
+      start_period: 30s
+    restart: always
+
+  # 5. Servidor de MLflow: Interfaz para gestionar experimentos de ML
   mlflow:
     build: "./dockerfiles/mlflow"
     container_name: mlflow
@@ -72,7 +122,7 @@ services:
       - MLFLOW_ARTIFACT_ROOT=s3://mlflow/
       - MLFLOW_S3_ENDPOINT_URL=http://s3:9000
 
-  # 5. Inicializador de Airflow: Automatiza la configuración inicial de Airflow
+  # 6. Inicializador de Airflow: Automatiza la configuración inicial de Airflow
   airflow-init:
     build: ./dockerfiles/airflow
     container_name: airflow-init
@@ -83,15 +133,13 @@ services:
         condition: service_healthy
     command: airflow db migrate
     environment:
-      AIRFLOW__CORE__EXECUTOR: LocalExecutor
-      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
-      AIRFLOW_HOME: /opt/airflow
+      <<: *airflow-env
     volumes:
       - ./dags:/opt/airflow/dags
       - ./logs:/opt/airflow/logs
       - ./plugins:/opt/airflow/plugins
 
-  # 6. Webserver de Airflow: Interfaz de usuario para gestionar flujos de trabajo
+  # 7. ApiServer de Airflow: Interfaz de usuario para gestionar flujos de trabajo
   airflow-apiserver:
     build: ./dockerfiles/airflow
     container_name: airflow-apiserver
@@ -104,15 +152,14 @@ services:
     networks:
       - backend
     environment:
-      AIRFLOW__CORE__EXECUTOR: LocalExecutor
-      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
+      <<: *airflow-env
     command: airflow api-server
     volumes:
       - ./dags:/opt/airflow/dags
       - ./logs:/opt/airflow/logs
       - ./plugins:/opt/airflow/plugins
 
-  # 7. Scheduler de Airflow: Orquesta la ejecución de los flujos de trabajo
+  # 8. Scheduler de Airflow: Orquesta la ejecución de los flujos de trabajo
   airflow-scheduler:
     build: ./dockerfiles/airflow
     container_name: airflow-scheduler
@@ -120,18 +167,63 @@ services:
     depends_on:
       airflow-init:
         condition: service_completed_successfully
+      redis:
+        condition: service_healthy
     networks:
       - backend
     environment:
-      AIRFLOW__CORE__EXECUTOR: LocalExecutor
-      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
+      <<: *airflow-env
     command: airflow scheduler
     volumes:
       - ./dags:/opt/airflow/dags
       - ./logs:/opt/airflow/logs
       - ./plugins:/opt/airflow/plugins
 
-  # 8. Servicio de Predicción (FastAPI): API para servir modelos entrenados
+  # 9. Procesador de DAGs de Airflow: 
+  airflow-dag-processor:
+    build: ./dockerfiles/airflow
+    container_name: airflow-dag-processor
+    restart: always
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    networks:
+      - backend
+    environment:
+      <<: *airflow-env
+    command: airflow dag-processor
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./logs:/opt/airflow/logs
+      - ./plugins:/opt/airflow/plugins
+
+  # 10. Worker de Airflow: Procesador de tareas distribuidas
+  airflow-worker:
+    build: ./dockerfiles/airflow
+    container_name: airflow-worker
+    restart: always
+
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+      redis:
+        condition: service_healthy
+
+    networks:
+      - backend
+
+    environment:
+      <<: *airflow-env
+
+    command: airflow celery worker
+
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./logs:/opt/airflow/logs
+      - ./plugins:/opt/airflow/plugins
+
+  # 11. Servicio de Predicción (FastAPI): API para servir modelos entrenados
   fastapi:
     build: ./dockerfiles/fastapi
     container_name: fastapi

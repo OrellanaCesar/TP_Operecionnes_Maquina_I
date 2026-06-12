@@ -8,7 +8,7 @@ pandas
 scikit-learn
 
 numpy
-
+s3fs
 mlflow
 boto3
 catboost

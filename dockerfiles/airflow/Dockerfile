@@ -18,6 +18,11 @@ RUN apt-get update \
 # Vuelve al usuario 'airflow' por seguridad (nunca debemos ejecutar procesos como root si no es necesario)
 USER airflow
 
+# Providers necesarios para Celery + Redis
+RUN pip install --no-cache-dir \
+    apache-airflow-providers-celery \
+    redis
+    
 # Instala todas las librerías de Python listadas en el requirements.txt
 # --no-cache-dir evita que se guarden archivos temporales de instalación (ahorra espacio)
 RUN pip install --no-cache-dir -r /requirements.txt
